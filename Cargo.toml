@@ -1,0 +1,9 @@
+[package]
+name = "git_promote"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.101"
+clap = "4.5.58"
+git2 = "0.20.4"
