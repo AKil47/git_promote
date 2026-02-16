@@ -1,13 +1,24 @@
 use anyhow::{bail, Context, Result};
+use clap::Parser;
 use git2::{build::CheckoutBuilder, Repository, StatusOptions};
 use std::env;
 use std::path::PathBuf;
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Automatically commit uncommitted changes with message "wip"
+    #[arg(long)]
+    wip: bool,
+}
+
 fn main() -> Result<()> {
+    let args = Args::parse();
+
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let repo = Repository::open(&current_dir).context("Failed to open repository")?;
 
-    validate_current_worktree(&repo)?;
+    validate_current_worktree(&repo, args.wip)?;
 
     let main_worktree_path = find_main_worktree(&repo)?;
     println!("Found main worktree at: {:?}", main_worktree_path);
@@ -24,11 +35,55 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn validate_current_worktree(repo: &Repository) -> Result<()> {
+fn validate_current_worktree(repo: &Repository, wip: bool) -> Result<()> {
     if !repo.is_worktree() {
         bail!("Current repository is not a worktree. 'git promote' must be run from a worktree.");
     }
-    check_clean_status(repo, "Current worktree")?;
+
+    let dirty_count = count_dirty_items(repo, "Current worktree")?;
+
+    if dirty_count > 0 {
+        if wip {
+            commit_wip(repo)?;
+        } else {
+            bail!("Current worktree has {} unstaged/uncommitted changes. Use --wip to auto-commit them as 'wip', or clean up before promoting.", dirty_count);
+        }
+    }
+    
+    Ok(())
+}
+
+fn commit_wip(repo: &Repository) -> Result<()> {
+    // Add all changes to index
+    let mut index = repo.index().context("Failed to get index")?;
+    
+    // items to add are determined by status (modified, deleted, etc.)
+    // simpler to just add all tracked files that are modified/deleted + untracked?
+    // The requirement says "uncommitted changes in the worktree".
+    // "git commit -am" usually handles modified and deleted tracked files.
+    // Let's emulate `git add -u` (update tracked files) or `git add .`?
+    // User said: equivalent of `git commit -am wip`. `git commit -a` automatically stages files that have been modified and deleted, but new files you have not told Git about are not affected.
+    
+    index.update_all(vec!["*"].iter(), None).context("Failed to update index")?;
+    index.write().context("Failed to write index")?;
+
+    let oid = index.write_tree().context("Failed to write tree")?;
+    let tree = repo.find_tree(oid).context("Failed to find tree")?;
+
+    let signature = repo.signature().context("Failed to get signature")?;
+    let parent_commit = repo.head().context("Failed to get HEAD")?.peel_to_commit().context("Failed to resolve HEAD to commit")?;
+
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "wip",
+        &tree,
+        &[&parent_commit],
+    ).context("Failed to create wip commit")?;
+    
+    println!("Created WIP commit.");
+
     Ok(())
 }
 
@@ -37,7 +92,11 @@ fn validate_main_repo(repo: &Repository) -> Result<()> {
     if repo.is_bare() {
         bail!("Main repository is bare. Cannot checkout.");
     }
-    check_clean_status(repo, "Main worktree")?;
+    
+    let dirty_count = count_dirty_items(repo, "Main worktree")?;
+    if dirty_count > 0 {
+         bail!("Main worktree has {} unstaged/uncommitted changes. Please clean up before promoting.", dirty_count);
+    }
     Ok(())
 }
 
@@ -66,7 +125,7 @@ fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid) -> Result<()> {
     Ok(())
 }
 
-fn check_clean_status(repo: &Repository, name: &str) -> Result<()> {
+fn count_dirty_items(repo: &Repository, name: &str) -> Result<usize> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true);
     let statuses = repo.statuses(Some(&mut opts)).context(format!("Failed to get statuses for {}", name))?;
@@ -74,10 +133,7 @@ fn check_clean_status(repo: &Repository, name: &str) -> Result<()> {
     // Filter out ignored files just in case
     let dirty_count = statuses.iter().filter(|s| !s.status().is_ignored()).count();
 
-    if dirty_count > 0 {
-        bail!("{} has {} unstaged/uncommitted changes. Please clean up before promoting.", name, dirty_count);
-    }
-    Ok(())
+    Ok(dirty_count)
 }
 
 fn find_main_worktree(repo: &Repository) -> Result<PathBuf> {
@@ -90,4 +146,3 @@ fn find_main_worktree(repo: &Repository) -> Result<PathBuf> {
     
     Ok(main_root.to_path_buf())
 }
-

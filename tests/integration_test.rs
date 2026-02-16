@@ -41,9 +41,9 @@ fn setup_repo_and_worktree(test_name: &str) -> (PathBuf, PathBuf, PathBuf) {
     (test_root, main_repo_path, worktree_path)
 }
 
-fn run_git_promote(cwd: &Path) -> std::process::ExitStatus {
+fn run_git_promote(cwd: &Path, args: &[&str]) -> std::process::ExitStatus {
     let binary = env::current_dir().unwrap().join("target/debug/git_promote.exe");
-    Command::new(&binary).current_dir(cwd).status().unwrap()
+    Command::new(&binary).args(args).current_dir(cwd).status().unwrap()
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn test_git_promote_success() {
     let commit_hash = wt_repo.head().unwrap().peel_to_commit().unwrap().id();
 
     // 4. Run git_promote
-    let status = run_git_promote(&worktree_path);
+    let status = run_git_promote(&worktree_path, &[]);
     assert!(status.success(), "git_promote failed");
 
     // 5. Verify main repo
@@ -88,7 +88,7 @@ fn test_not_in_worktree() {
     // Run in main repo (which is not a worktree of itself, usually? well git2 is_worktree checks if it is a linked worktree)
     // A standard repo is NOT a worktree in git2 terminology (is_worktree() returns false).
     
-    let status = run_git_promote(&main_repo_path);
+    let status = run_git_promote(&main_repo_path, &[]);
     assert!(!status.success(), "Should fail when run in main repo");
 }
 
@@ -99,7 +99,7 @@ fn test_dirty_worktree() {
     // Modify file but don't commit
     fs::write(worktree_path.join("file.txt"), "dirty").unwrap();
     
-    let status = run_git_promote(&worktree_path);
+    let status = run_git_promote(&worktree_path, &[]);
     assert!(!status.success(), "Should fail with dirty worktree");
 }
 
@@ -111,6 +111,45 @@ fn test_dirty_main() {
     fs::write(main_repo_path.join("file.txt"), "dirty main").unwrap();
     
     // Attempt promote from worktree
-    let status = run_git_promote(&worktree_path);
+    let status = run_git_promote(&worktree_path, &[]);
     assert!(!status.success(), "Should fail when main worktree is dirty");
+}
+
+#[test]
+fn test_dirty_worktree_with_wip() {
+    let (_, main_repo_path, worktree_path) = setup_repo_and_worktree("dirty_worktree_wip");
+    
+    // Modify file but don't commit
+    fs::write(worktree_path.join("file.txt"), "dirty").unwrap();
+    
+    // Run with --wip
+    let status = run_git_promote(&worktree_path, &["--wip"]);
+    assert!(status.success(), "Should success with --wip");
+
+    // Verify wip commit created
+    let wt_repo = Repository::open(&worktree_path).unwrap();
+    let head = wt_repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.message().unwrap(), "wip");
+
+    // Verify promoted
+     let main_repo_check = Repository::open(&main_repo_path).unwrap();
+    let main_head_id = main_repo_check.head().unwrap().peel_to_commit().unwrap().id();
+
+    assert_eq!(main_head_id, head.id(), "Main repo HEAD should match worktree commit");
+    let content = fs::read_to_string(main_repo_path.join("file.txt")).unwrap();
+    assert_eq!(content, "dirty");
+}
+
+#[test]
+fn test_clean_worktree_with_wip() {
+     let (_, _, worktree_path) = setup_repo_and_worktree("clean_worktree_wip");
+
+     // Run with --wip on clean worktree
+     let status = run_git_promote(&worktree_path, &["--wip"]);
+     assert!(status.success(), "Should success with --wip on clean worktree");
+
+     // Verify no new commit
+     let wt_repo = Repository::open(&worktree_path).unwrap();
+     let head = wt_repo.head().unwrap().peel_to_commit().unwrap();
+     assert_ne!(head.message().unwrap(), "wip"); // Should be initial commit or whatever was before
 }

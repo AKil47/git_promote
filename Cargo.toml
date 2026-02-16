@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.101"
-clap = "4.5.58"
+clap = { version = "4.5.48", features = ["derive"] }
 git2 = "0.20.4"
