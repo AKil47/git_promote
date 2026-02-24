@@ -151,5 +151,22 @@ fn test_clean_worktree_with_wip() {
      // Verify no new commit
      let wt_repo = Repository::open(&worktree_path).unwrap();
      let head = wt_repo.head().unwrap().peel_to_commit().unwrap();
-     assert_ne!(head.message().unwrap(), "wip"); // Should be initial commit or whatever was before
+    assert_ne!(head.message().unwrap(), "wip"); // Should be initial commit or whatever was before
+}
+
+#[test]
+fn test_dirty_main_with_force() {
+    let (_, main_repo_path, worktree_path) = setup_repo_and_worktree("dirty_main_force");
+    
+    // Modify file in MAIN repo
+    fs::write(main_repo_path.join("file.txt"), "dirty main").unwrap();
+    
+    // Attempt promote from worktree
+    let status = run_git_promote(&worktree_path, &["--force"]);
+    assert!(status.success(), "Should succeed when main worktree is dirty but --force is used");
+    
+    // Check that file.txt is restored
+    let content = fs::read_to_string(main_repo_path.join("file.txt")).unwrap();
+    // The main worktree is checking out the commit from worktree which is "initial" since we didn't modify it in worktree in this test.
+    assert_eq!(content, "initial");
 }

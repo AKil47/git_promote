@@ -10,6 +10,10 @@ struct Args {
     /// Automatically commit uncommitted changes with message "wip"
     #[arg(long)]
     wip: bool,
+
+    /// Overwrite uncommitted changes in the main worktree instead of failing
+    #[arg(long)]
+    force: bool,
 }
 
 fn main() -> Result<()> {
@@ -24,12 +28,12 @@ fn main() -> Result<()> {
     println!("Found main worktree at: {:?}", main_worktree_path);
 
     let main_repo = Repository::open(&main_worktree_path).context("Failed to open main repository")?;
-    validate_main_repo(&main_repo)?;
+    validate_main_repo(&main_repo, args.force)?;
 
     let head_commit = repo.head().context("Failed to get HEAD")?.peel_to_commit().context("Failed to resolve HEAD to commit")?;
     let commit_id = head_commit.id();
 
-    promote_to_main(&main_repo, commit_id)?;
+    promote_to_main(&main_repo, commit_id, args.force)?;
 
     println!("Done.");
     Ok(())
@@ -87,7 +91,7 @@ fn commit_wip(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
-fn validate_main_repo(repo: &Repository) -> Result<()> {
+fn validate_main_repo(repo: &Repository, force: bool) -> Result<()> {
     // Check if main repo is bare, just in case
     if repo.is_bare() {
         bail!("Main repository is bare. Cannot checkout.");
@@ -95,7 +99,11 @@ fn validate_main_repo(repo: &Repository) -> Result<()> {
     
     let dirty_count = count_dirty_items(repo, "Main worktree")?;
     if dirty_count > 0 {
-         bail!("Main worktree has {} unstaged/uncommitted changes. Please clean up before promoting.", dirty_count);
+        if force {
+            println!("Main worktree has {} unstaged/uncommitted changes, but --force was used. Overwriting.", dirty_count);
+        } else {
+            bail!("Main worktree has {} unstaged/uncommitted changes. Please clean up before promoting.", dirty_count);
+        }
     }
     Ok(())
 }
@@ -110,12 +118,15 @@ fn validate_main_repo(repo: &Repository) -> Result<()> {
 /// 2. Perform a safe `checkout_tree` to update the working directory.
 ///    - This ensures that if there are uncommitted changes in the main worktree that would be overwritten, the operation fails safely.
 /// 3. Update HEAD to the target commit (detached).
-fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid) -> Result<()> {
+fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid, force: bool) -> Result<()> {
     // We need to look up the commit/tree IN the main repo to ensure it belongs to that Repository instance.
     let main_target_commit = main_repo.find_commit(commit_id).context("Failed to find target commit in main repo")?;
     let main_target_tree = main_target_commit.tree().context("Failed to get tree of target commit in main repo")?;
     
     let mut checkout_builder = CheckoutBuilder::new();
+    if force {
+        checkout_builder.force();
+    }
     // Default is Safe.
     main_repo.checkout_tree(main_target_tree.as_object(), Some(&mut checkout_builder))
         .context("Failed to checkout target tree in main repo")?;
