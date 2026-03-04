@@ -170,3 +170,48 @@ fn test_dirty_main_with_force() {
     // The main worktree is checking out the commit from worktree which is "initial" since we didn't modify it in worktree in this test.
     assert_eq!(content, "initial");
 }
+
+#[test]
+fn test_promote_detached_branch_name() {
+    let (_, main_repo_path, worktree_path) = setup_repo_and_worktree("detached_branch");
+
+    let status = run_git_promote(&worktree_path, &[]);
+    assert!(status.success(), "git_promote failed");
+
+    // verify git status indicates detached at branch
+    let output = Command::new("git")
+        .arg("status")
+        .current_dir(&main_repo_path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("HEAD detached at feature") || stdout.contains("HEAD detached at refs/heads/feature"),
+        "Git status did not show detached at branch: {}", stdout
+    );
+}
+
+#[test]
+fn test_promote_detached_commit() {
+    let (_, main_repo_path, worktree_path) = setup_repo_and_worktree("detached_commit");
+
+    // detach worktree so `git promote` sees no branch name
+    let wt_repo = Repository::open(&worktree_path).unwrap();
+    let commit_hash = wt_repo.head().unwrap().peel_to_commit().unwrap().id();
+    wt_repo.set_head_detached(commit_hash).unwrap();
+
+    let status = run_git_promote(&worktree_path, &[]);
+    assert!(status.success(), "git_promote failed");
+
+    let output = Command::new("git")
+        .arg("status")
+        .current_dir(&main_repo_path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let short_hash = &commit_hash.to_string()[..7];
+    assert!(
+        stdout.contains(&format!("HEAD detached at {}", short_hash)),
+        "Git status did not show detached at commit: {}", stdout
+    );
+}

@@ -30,10 +30,17 @@ fn main() -> Result<()> {
     let main_repo = Repository::open(&main_worktree_path).context("Failed to open main repository")?;
     validate_main_repo(&main_repo, args.force)?;
 
-    let head_commit = repo.head().context("Failed to get HEAD")?.peel_to_commit().context("Failed to resolve HEAD to commit")?;
+    let head = repo.head().context("Failed to get HEAD")?;
+    let branch_name = if head.is_branch() {
+        head.shorthand().map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let head_commit = head.peel_to_commit().context("Failed to resolve HEAD to commit")?;
     let commit_id = head_commit.id();
 
-    promote_to_main(&main_repo, commit_id, args.force)?;
+    promote_to_main(&main_repo, commit_id, branch_name.as_deref(), args.force)?;
 
     println!("Done.");
     Ok(())
@@ -118,7 +125,7 @@ fn validate_main_repo(repo: &Repository, force: bool) -> Result<()> {
 /// 2. Perform a safe `checkout_tree` to update the working directory.
 ///    - This ensures that if there are uncommitted changes in the main worktree that would be overwritten, the operation fails safely.
 /// 3. Update HEAD to the target commit (detached).
-fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid, force: bool) -> Result<()> {
+fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid, branch_name: Option<&str>, force: bool) -> Result<()> {
     // We need to look up the commit/tree IN the main repo to ensure it belongs to that Repository instance.
     let main_target_commit = main_repo.find_commit(commit_id).context("Failed to find target commit in main repo")?;
     let main_target_tree = main_target_commit.tree().context("Failed to get tree of target commit in main repo")?;
@@ -131,7 +138,18 @@ fn promote_to_main(main_repo: &Repository, commit_id: git2::Oid, force: bool) ->
     main_repo.checkout_tree(main_target_tree.as_object(), Some(&mut checkout_builder))
         .context("Failed to checkout target tree in main repo")?;
     
-    main_repo.set_head_detached(commit_id).context("Failed to set detached HEAD in main repo")?;
+    let detached_from_branch = branch_name
+        .and_then(|name| main_repo.find_branch(name, git2::BranchType::Local).ok())
+        .and_then(|branch| {
+            let reference = branch.into_reference();
+            main_repo.reference_to_annotated_commit(&reference).ok()
+        })
+        .and_then(|annotated| main_repo.set_head_detached_from_annotated(annotated).ok())
+        .is_some();
+    
+    if !detached_from_branch {
+        main_repo.set_head_detached(commit_id).context("Failed to set detached HEAD in main repo")?;
+    }
 
     Ok(())
 }
